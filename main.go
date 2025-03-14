@@ -1,13 +1,15 @@
 package main
 
 import (
-	_ "bytes"
+	"bytes"
+	"encoding/json"
 	_ "encoding/json"
 	"fmt"
 	"log"
-	_ "net/http"
+	"net/http"
 	"os"
-   "github.com/joho/godotenv"
+
+	"github.com/joho/godotenv"
 	"github.com/rabbitmq/amqp091-go"
 )
 
@@ -23,6 +25,7 @@ func AmqpConnection() *amqp091.Connection {
 
     if err != nil {
         log.Fatal("Error loading .env file")
+        return nil; 
     }
 
     user := os.Getenv("userRabbit")
@@ -30,18 +33,34 @@ func AmqpConnection() *amqp091.Connection {
     ip := os.Getenv("INSTANCE_IP")
 
     br, err := amqp091.Dial("amqp://" + user + ":" + password + "@" + ip + "/")
-    failOnError(err, "Failed to create connection xD!")
-    log.Printf("Error: %s", err)
+
+    if err != nil {
+        log.Panicf("error to get instance!"); 
+        return nil; 
+    }
 
     return br
 }
 
 
 func main() {
-    conn := AmqpConnection();
-    defer conn.Close()
+    conn := AmqpConnection(); 
 
-    ch, err := conn.Channel()
+    if conn == nil {
+        log.Panicf("error to get connection!");
+    }
+
+    defer conn.Close(); 
+
+    go SendMessageWeight(conn);
+
+
+    select {};
+
+}
+
+func SendMessageWeight(br *amqp091.Connection) {
+    ch, err := br.Channel()
     failOnError(err, "Error al abrir un canal")
     defer ch.Close()
 
@@ -78,14 +97,11 @@ func main() {
     forever := make(chan bool)
 
     go func() {
-        
-		
 		for d := range msgs {
 			fmt.Printf("message: %s", d.Body); 
-			/*
-			var orange *entities.Orange
-			fmt.Printf("message:" ,d)
-
+		
+			var orange *struct{};
+            
 			err := json.Unmarshal(d.Body, orange)
 
 			if err != nil {
@@ -107,14 +123,9 @@ func main() {
 
 		
 			fmt.Print("message", query)
-			*/
 			}
     }()
 
     fmt.Println("Esperando mensajes...")
     <-forever
-}
-
-func SendMessageWeight() {
-
 }
