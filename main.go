@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	_ "encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,119 +12,153 @@ import (
 	"github.com/rabbitmq/amqp091-go"
 )
 
-func failOnError(err error, msg string) {
-    if err != nil {
-        log.Fatalf("%s: %s", msg, err)
-    }
+// OrangeInputData representa los datos recibidos del sensor
+type OrangeInputData struct {
+	IdEsp32 string  `json:"id_esp32"`
+	Peso    float64 `json:"peso"`
+	Tamano  string `json:"tamano"`
+	Color   string  `json:"color"`
 }
 
+// OrangeOutputData representa los datos que enviaremos a la API
+type OrangeOutputData struct {
+	Peso    float64 `json:"peso"`
+	Tamano  string  `json:"tamano"`
+	Color   string  `json:"color"`
+	Esp32FK string  `json:"esp32_fk"`
+}
+
+func failOnError(err error, msg string) {
+	if err != nil {
+		log.Fatalf("%s: %s", msg, err)
+	}
+}
 
 func AmqpConnection() *amqp091.Connection {
-    err := godotenv.Load(); 
+	err := godotenv.Load()
 
-    if err != nil {
-        log.Fatal("Error loading .env file")
-        return nil; 
-    }
+	if err != nil {
+		log.Fatal("Error loading .env file")
+		return nil
+	}
 
-    user := os.Getenv("userRabbit")
-    password := os.Getenv("passwordRabbit")
-    ip := os.Getenv("INSTANCE_IP")
+	user := os.Getenv("userRabbit")
+	password := os.Getenv("passwordRabbit")
+	ip := os.Getenv("INSTANCE_IP")
 
-    br, err := amqp091.Dial("amqp://" + user + ":" + password + "@" + ip + "/")
+	br, err := amqp091.Dial("amqp://" + user + ":" + password + "@" + ip + "/")
 
-    if err != nil {
-        log.Panicf("error to get instance!"); 
-        return nil; 
-    }
+	if err != nil {
+		log.Panicf("error to get instance!")
+		return nil
+	}
 
-    return br
+	return br
 }
-
 
 func main() {
-    conn := AmqpConnection(); 
+	conn := AmqpConnection()
 
-    if conn == nil {
-        log.Panicf("error to get connection!");
-    }
+	if conn == nil {
+		log.Panicf("error to get connection!")
+	}
 
-    defer conn.Close(); 
+	defer conn.Close()
 
-    go SendMessageWeight(conn);
+	go SubscribeToOrangeData(conn)
 
-
-    select {};
-
+	select {}
 }
 
-func SendMessageWeight(br *amqp091.Connection) {
-    ch, err := br.Channel()
-    failOnError(err, "Error al abrir un canal")
-    defer ch.Close()
+func SubscribeToOrangeData(br *amqp091.Connection) {
+	ch, err := br.Channel()
+	failOnError(err, "Error al abrir un canal")
+	defer ch.Close()
 
-    q, err := ch.QueueDeclare(
-        "data", 
-        true,      
-        false,   
-        false,     
-        false,      
-        nil,        
-    )
-    failOnError(err, "Error al declarar la cola")
+	q, err := ch.QueueDeclare(
+		"orange_queue", // Nombre de la cola para las naranjas
+		false,
+		false,
+		false,
+		false,
+		nil,
+	)
+	failOnError(err, "Error al declarar la cola")
 
-    err = ch.QueueBind(
-        q.Name,             
-        "peso",        
-        "orangesExchange", 
-        false,            
-        nil,                 
-    )
-    failOnError(err, "Error al enlazar la cola")
+	err = ch.QueueBind(
+		q.Name,
+		"test",      // Routing key para los datos de naranjas
+		"amq.topic", // Exchange MQTT por defecto en RabbitMQ
+		false,
+		nil,
+	)
+	failOnError(err, "Error al enlazar la cola con el topic orange.data")
 
-    msgs, err := ch.Consume(
-        q.Name,
-        "",    
-        true,   // auto-ack
-        false,  // exclusive
-        false,  // no-local
-        false,  // no-wait
-        nil,    // argumentos
-    )
-    failOnError(err, "Error al registrar el consumidor")
+	msgs, err := ch.Consume(
+		q.Name,
+		"",
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	failOnError(err, "Error al registrar el consumidor")
 
-    forever := make(chan bool)
+	forever := make(chan bool)
 
-    go func() {
+	go func() {
 		for d := range msgs {
-			fmt.Printf("message: %s", d.Body); 
-		
-			var orange *struct{};
-            
-			err := json.Unmarshal(d.Body, orange)
+			fmt.Printf("Mensaje recibido: %s\n", d.Body)
 
-			if err != nil {
-				fmt.Printf("erro to unmarshar data!");
-			}
+			// Procesar el mensaje y enviarlo a la API
+			processOrangeDataAndSendToAPI(d.Body)
+		}
+	}()
 
-			Json, errSerialize := json.Marshal(orange);
+	fmt.Println("Esperando mensajes en el topic 'test'...")
+	<-forever
+}
 
-			if errSerialize != nil {
-				fmt.Printf("error to serialize message into a json!")
-			}
-			ryder := bytes.NewReader(Json); 			
+func processOrangeDataAndSendToAPI(data []byte) {
+	var inputData OrangeInputData
+	err := json.Unmarshal(data, &inputData)
+	if err != nil {
+		log.Printf("Error al parsear JSON: %v", err)
+		return
+	}
 
-			query, errSendMessage := http.Post("http://localhost:8000", "applcation/json", ryder); 
+	// Crear los datos de salida enviando los datos sin transformar
+	outputData := OrangeOutputData{
+		Peso:    inputData.Peso,
+		Tamano:  inputData.Tamano, // Use original numerical value
+		Color:   inputData.Color,  // Use original color string
+		Esp32FK: inputData.IdEsp32,
+	}
 
-			if errSendMessage != nil {
-				fmt.Printf("error to send message!"); 
-			}
+	// Convertir a JSON
+	jsonData, err := json.Marshal(outputData)
+	if err != nil {
+		log.Printf("Error al crear JSON de salida: %v", err)
+		return
+	}
 
-		
-			fmt.Print("message", query)
-			}
-    }()
+	// Enviar datos a la API
+	resp, err := http.Post(
+		"http://localhost:8080/naranjas/",
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
 
-    fmt.Println("Esperando mensajes...")
-    <-forever
+	if err != nil {
+		log.Printf("Error al enviar datos a la API: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		log.Printf("Datos enviados exitosamente a la API. Código: %d", resp.StatusCode)
+	} else {
+		log.Printf("Error al enviar datos a la API. Código: %d", resp.StatusCode)
+	}
 }
