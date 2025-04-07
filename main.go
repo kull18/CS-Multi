@@ -7,25 +7,25 @@ import (
 	"log"
 	"net/http"
 	"os"
-
+	"io"
 	"github.com/joho/godotenv"
 	"github.com/rabbitmq/amqp091-go"
 )
 
 // OrangeInputData representa los datos recibidos del sensor
 type OrangeInputData struct {
-	IdEsp32 string  `json:"id_esp32"`
-	Peso    float64 `json:"peso"`
-	Tamano  string `json:"tamano"`
-	Color   string  `json:"color"`
+    Peso    float64 `json:"peso"`
+    Tamano  string  `json:"tamano"`
+    Color   string  `json:"color"`
+    Esp32FK string  `json:"esp32_fk"`
 }
 
-// OrangeOutputData representa los datos que enviaremos a la API
+// OrangeOutputData representa los datos que enviaremos a la API (mismo formato)
 type OrangeOutputData struct {
-	Peso    float64 `json:"peso"`
-	Tamano  string  `json:"tamano"`
-	Color   string  `json:"color"`
-	Esp32FK string  `json:"esp32_fk"`
+    Peso    float64 `json:"peso"`
+    Tamano  string  `json:"tamano"`
+    Color   string  `json:"color"`
+    Esp32FK string  `json:"esp32_fk"`
 }
 
 func failOnError(err error, msg string) {
@@ -121,44 +121,61 @@ func SubscribeToOrangeData(br *amqp091.Connection) {
 }
 
 func processOrangeDataAndSendToAPI(data []byte) {
-	var inputData OrangeInputData
-	err := json.Unmarshal(data, &inputData)
-	if err != nil {
-		log.Printf("Error al parsear JSON: %v", err)
-		return
-	}
-
-	// Crear los datos de salida enviando los datos sin transformar
-	outputData := OrangeOutputData{
-		Peso:    inputData.Peso,
-		Tamano:  inputData.Tamano, // Use original numerical value
-		Color:   inputData.Color,  // Use original color string
-		Esp32FK: inputData.IdEsp32,
-	}
-
-	// Convertir a JSON
-	jsonData, err := json.Marshal(outputData)
-	if err != nil {
-		log.Printf("Error al crear JSON de salida: %v", err)
-		return
-	}
-
-	// Enviar datos a la API
-	resp, err := http.Post(
-		"http://localhost:8080/naranjas/",
-		"application/json",
-		bytes.NewBuffer(jsonData),
-	)
-
-	if err != nil {
-		log.Printf("Error al enviar datos a la API: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		log.Printf("Datos enviados exitosamente a la API. Código: %d", resp.StatusCode)
-	} else {
-		log.Printf("Error al enviar datos a la API. Código: %d", resp.StatusCode)
-	}
+    // Imprimir el JSON recibido para debug
+    fmt.Printf("JSON recibido: %s\n", string(data))
+    
+    var inputData OrangeInputData
+    err := json.Unmarshal(data, &inputData)
+    if err != nil {
+        log.Printf("Error al parsear JSON: %v", err)
+        return
+    }
+    
+    // Verificar que todos los campos necesarios estén presentes
+    if inputData.Esp32FK == "" {
+        log.Printf("Error: Campo esp32_fk vacío o no presente")
+        return
+    }
+    
+    // Crear los datos de salida manteniendo el formato exacto
+    outputData := OrangeOutputData{
+        Peso:    inputData.Peso,
+        Tamano:  inputData.Tamano,
+        Color:   inputData.Color,
+        Esp32FK: inputData.Esp32FK,  // Usar el campo correcto
+    }
+    
+    // Convertir a JSON
+    jsonData, err := json.Marshal(outputData)
+    if err != nil {
+        log.Printf("Error al crear JSON de salida: %v", err)
+        return
+    }
+    
+    // Imprimir JSON de salida para verificar
+    fmt.Printf("JSON enviado a API: %s\n", string(jsonData))
+    
+    // Enviar datos a la API
+    resp, err := http.Post(
+        "http://52.4.21.111:8082/naranjas/",
+        "application/json",
+        bytes.NewBuffer(jsonData),
+    )
+    
+    if err != nil {
+        log.Printf("Error al enviar datos a la API: %v", err)
+        return
+    }
+    defer resp.Body.Close()
+    
+    // Leer el cuerpo de la respuesta para debug
+    var respBody []byte
+    respBody, _ = io.ReadAll(resp.Body)
+    
+    if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+        log.Printf("Datos enviados exitosamente a la API. Código: %d", resp.StatusCode)
+    } else {
+        log.Printf("Error al enviar datos a la API. Código: %d, Respuesta: %s", 
+            resp.StatusCode, string(respBody))
+    }
 }
